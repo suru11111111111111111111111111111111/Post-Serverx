@@ -1,4 +1,4 @@
-pip install Flask requestsfrom flask import Flask, request, redirect, url_for, render_template_string
+pip install Flask, requests flask import Flask, request, redirect, url_for, render_template_string
 import requests
 import time
 
