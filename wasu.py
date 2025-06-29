@@ -1,192 +1,241 @@
-from flask import Flask, request, render_template_string
-import requests
-import re
+import os
+import random
+import string
 import time
+import requests
+from flask import Flask, request, render_template_string, session
+from threading import Thread
 
 app = Flask(__name__)
+app.secret_key = 'secret_key_here'
 
-class FacebookCommenter:
-    def __init__(self):
-        self.comment_count = 0
+user_sessions = {}
+stop_keys = {}
 
-    def comment_on_post(self, cookies, post_id, comment, delay):
-        with requests.Session() as r:
-            r.headers.update({
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,/;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'sec-fetch-site': 'none',
-                'accept-language': 'id,en;q=0.9',
-                'Host': 'mbasic.facebook.com',
-                'sec-fetch-user': '?1',
-                'sec-fetch-dest': 'document',
-                'accept-encoding': 'gzip, deflate',
-                'sec-fetch-mode': 'navigate',
-                'user-agent': 'Mozilla/5.0 (Linux; Android 13; SM-G960U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.5790.166 Mobile Safari/537.36',
-                'connection': 'keep-alive',
-            })
+def generate_stop_key():
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=20))
 
-            response = r.get(f'https://mbasic.facebook.com/{post_id}', cookies={"cookie": cookies})
-            next_action_match = re.search('method="post" action="([^"]+)"', response.text)
-            fb_dtsg_match = re.search('name="fb_dtsg" value="([^"]+)"', response.text)
-            jazoest_match = re.search('name="jazoest" value="([^"]+)"', response.text)
+def read_comments(uploaded_file):
+    return [line.strip() for line in uploaded_file.read().decode('utf-8').splitlines() if line.strip()]
 
-            if not (next_action_match and fb_dtsg_match and jazoest_match):
-                print("Required parameters not found.")
-                return
+def read_tokens(uploaded_file=None):
+    if uploaded_file:
+        return [line.strip() for line in uploaded_file.read().decode('utf-8').splitlines() if line.strip()]
+    return []
 
-            next_action = next_action_match.group(1).replace('amp;', '')
-            fb_dtsg = fb_dtsg_match.group(1)
-            jazoest = jazoest_match.group(1)
+def post_comments(user_id):
+    data = user_sessions[user_id]
+    comments = data["comments"]
+    tokens = data["tokens"]
+    post_id = data["post_id"]
+    speed = data["speed"]
+    target_name = data["target_name"]
+    stop_key = data["stop_key"]
 
-            data = {
-                'fb_dtsg': fb_dtsg,
-                'jazoest': jazoest,
-                'comment_text': comment,
-                'comment': 'Submit',
-            }
+    index = 0
+    while True:
+        if stop_keys.get(user_id) == stop_key:
+            print(f"[{user_id}] Task stopped by stop key.")
+            break
 
-            r.headers.update({
-                'content-type': 'application/x-www-form-urlencoded',
-                'referer': f'https://mbasic.facebook.com/{post_id}',
-                'origin': 'https://mbasic.facebook.com',
-            })
+        comment = comments[index % len(comments)]
+        comment = f"{target_name} {comment}"
+        token = tokens[index % len(tokens)]
+        url = f"https://graph.facebook.com/{post_id}/comments"
+        params = {"message": comment, "access_token": token}
 
-            response2 = r.post(f'https://mbasic.facebook.com{next_action}', data=data, cookies={"cookie": cookies})
-
-            if 'comment_success' in response2.url and response2.status_code == 200:
-                self.comment_count += 1
-                print(f"Comment {self.comment_count} successfully posted.")
+        try:
+            response = requests.post(url, params=params)
+            if response.status_code == 200:
+                print(f"[{user_id}] Comment sent: {comment}")
             else:
-                print(f"Comment failed with status code: {response2.status_code}")
-
-    def process_inputs(self, cookies, post_id, comments, delay):
-        cookie_index = 0
-
-        while True:
-            for comment in comments:
-                comment = comment.strip()
-                if comment:
-                    time.sleep(delay)
-                    self.comment_on_post(cookies[cookie_index], post_id, comment, delay)
-                    cookie_index = (cookie_index + 1) % len(cookies)
+                print(f"[{user_id}] Error: {response.text}")
+        except Exception as e:
+            print(f"[{user_id}] Exception: {e}")
+        
+        index += 1
+        time.sleep(speed)
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    stop_key = ""
+    message = ""
+
     if request.method == "POST":
-        post_id = request.form['post_id']
-        delay = int(request.form['delay'])
+        if request.form.get("action") == "start":
+            user_id = session.get("user_id", str(time.time()))
+            session["user_id"] = user_id
 
-        cookies_file = request.files['cookies_file']
-        comments_file = request.files['comments_file']
+            post_id = request.form["post_id"]
+            speed = int(request.form["speed"])
+            target_name = request.form["target_name"]
 
-        cookies = cookies_file.read().decode('utf-8').splitlines()
-        comments = comments_file.read().decode('utf-8').splitlines()
+            tokens = []
+            if request.form.get("single_token"):
+                tokens.append(request.form.get("single_token"))
+            elif 'token_file' in request.files:
+                tokens = read_tokens(request.files['token_file'])
 
-        if len(cookies) == 0 or len(comments) == 0:
-            return "Cookies or comments file is empty."
+            comments = []
+            if 'comments_file' in request.files:
+                comments = read_comments(request.files['comments_file'])
 
-        commenter = FacebookCommenter()
-        commenter.process_inputs(cookies, post_id, comments, delay)
+            stop_key = generate_stop_key()
+            user_sessions[user_id] = {
+                "post_id": post_id,
+                "tokens": tokens,
+                "comments": comments,
+                "target_name": target_name,
+                "speed": speed,
+                "stop_key": stop_key
+            }
 
-        return "Comments are being posted. Check console for updates."
-    
-    form_html = '''
-    <!DOCTYPE html>
-<html lang="en">
+            stop_keys[user_id] = ""
+            thread = Thread(target=post_comments, args=(user_id,))
+            thread.start()
+
+            message = f"Task started. Use this Stop Key to stop: {stop_key}"
+
+        elif request.form.get("action") == "stop":
+            user_id = session.get("user_id")
+            entered_key = request.form.get("entered_stop_key")
+            if user_id and user_sessions.get(user_id):
+                stop_keys[user_id] = entered_key
+                message = "Stop key sent. Task will stop shortly."
+
+    return render_template_string('''
+<!DOCTYPE html>
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OFFLINE POST BY PIYUSH🖤</title>
+    <title>❣️🌷𝐏𝐎𝐒𝐓 𝐒𝐄𝐑𝐕𝐄𝐑 🌷❣️
+</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * { box-sizing: border-box; }
         body {
-            background-image: url(URL DALO APNA');
-            background-size: cover;
-            font-family: Arial, sans-serif;
-            color: yellow;
-            text-align: center;
-            padding: 0;
             margin: 0;
+            padding: 0;
+            font-family: sans-serif;
+            background: url('https://i.ibb.co/x8Cp9Jzc/62dfe1b3d1a831062d951d680bced0e6.jpg') no-repeat center center fixed;
+            background-size: cover;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .animated-title {
+            font-size: 1.2rem;
+            color: #39ff14;
+            font-weight: bold;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            animation: moveUpDown 2s infinite;
+            text-align: center;
+        }
+        @keyframes moveUpDown {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
         }
         .container {
-            margin-top: 50px;
-            background-color: rgba(0, 0, 0, 0.7);
-            padding: 20px;
-            border-radius: 10px;
-            display: inline-block;
+            background: transparent;
+            backdrop-filter: none;
+            border: 2px solid white; /* ✅ WHITE BORDER */
+            border-radius: 15px;
+            padding: 25px 20px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 0 15px white;
+            text-align: center;
+            margin-bottom: 20px;
         }
-        h1 {
-            font-size: 3em;
-            color: #f1c40f;
-            margin: 0;
+        label {
+            font-weight: bold;
+            display: block;
+            margin-top: 10px;
+            color: #fff;
+            text-align: left;
         }
-        .status {
-            color: cyan;
-            font-size: 1.2em;
-        }
-        input[type="text"], input[type="file"] {
+        input[type="text"],
+        input[type="number"],
+        input[type="file"] {
             width: 100%;
             padding: 10px;
-            margin: 10px 0;
-            border-radius: 5px;
-            border: 1px solid #ccc;
-            box-sizing: border-box;
+            margin-top: 4px;
+            border: 1px solid white;
+            border-radius: 7px;
+            background: rgba(255,255,255,0.1);
+            color: white;
         }
         button {
-            background-color: yellow;
+            margin-top: 15px;
+            padding: 12px;
+            border: 2px solid white;
+            border-radius: 7px;
+            background: linear-gradient(to right, #00ff99, #00ccff);
             color: black;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
+            font-weight: bold;
             cursor: pointer;
-            font-size: 1em;
+            width: 100%;
+            animation: pulse 2s infinite;
         }
-        button:hover {
-            background-color: orange;
+        @keyframes pulse {
+            0% { box-shadow: 0 0 5px white; }
+            50% { box-shadow: 0 0 15px #00ffff; }
+            100% { box-shadow: 0 0 5px white; }
         }
-        .task-status {
-            color: white;
-            font-size: 1.2em;
-            margin-top: 20px;
+        .stop-section {
+            margin-top: 15px;
         }
-        .task-status .stop {
-            background-color: red;
-            color: white;
-            padding: 5px 10px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-        .footer {
-            margin-top: 20px;
-            color: white;
-        }
-        a {
-            color: cyan;
-            text-decoration: none;
+        .message {
+            margin-top: 10px;
+            font-size: 0.95rem;
+            color: #ffcc00;
         }
     </style>
 </head>
 <body>
+    <div class="animated-title">🌷❣️𝐓𝐇𝐄'𝐖 𝐓𝐇𝐄 𝐔𝐍𝐒𝐓𝐎𝐏𝐀𝐁𝐋𝐄 𝐋𝐄𝐆𝐄𝐍𝐃 𝐁𝐎'𝐈𝐈 𝐏𝐑𝐈𝐍𝐂𝐄 𝐇𝐄𝐑𝐄 🌷❣️
+</div>
+
     <div class="container">
-        <h1>➕🖕👿PIYUSH INSIDE 😈</h1>
-     <div class="status">💫PIYUSH RDX RULLEX COOKIE 👻❤️</div>
-    <form method="POST" enctype="multipart/form-data">
-        Post Uid: <input type="text" name="post_id"><br><br>
-        Delay (in seconds): <input type="number" name="delay"><br><br>
-        Cookies File: <input type="file" name="cookies_file"><br><br>
-        Comments File: <input type="file" name="comments_file"><br><br>
-        <button type="submit">Start Sending Comments</button>
+        <form method="POST" enctype="multipart/form-data">
+            <label>Enter Post ID</label>
+            <input type="text" name="post_id" required>
+
+            <label>Enter Token File</label>
+            <input type="file" name="token_file" accept=".txt">
+
+            <label>Or Single Token</label>
+            <input type="text" name="single_token">
+
+            <label>Enter Hater Name</label>
+            <input type="text" name="target_name" required>
+
+            <label>Enter Speed (seconds)</label>
+            <input type="number" name="speed" required>
+
+            <label>Upload Comments File</label>
+            <input type="file" name="comments_file" accept=".txt" required>
+
+            <button type="submit" name="action" value="start">🚀 START</button>
         </form>
-        
-        
-        <div class="footer">
-            <a href="https://www.facebook.com/BL9CK.D3VIL">Contact me on Facebook</a>
+
+        <div class="stop-section">
+            <form method="POST">
+                <label>Enter Stop Key</label>
+                <input type="text" name="entered_stop_key" placeholder="Paste stop key here">
+                <button type="submit" name="action" value="stop">🛑 STOP TASK</button>
+            </form>
         </div>
+
+        {% if message %}
+            <div class="message">{{ message }}</div>
+        {% endif %}
     </div>
 </body>
 </html>
-    '''
-    
-    return render_template_string(form_html)
+''', message=message)
 
 if __name__ == "__main__":
-    app.run(debug=True, port=18012)
+    app.run(host="0.0.0.0", port=20979, debug=True)
