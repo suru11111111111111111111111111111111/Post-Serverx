@@ -1,6 +1,7 @@
-pip install Flask, request flask import Flask, request, redirect, url_for, render_template_string
-import requests
-import time
+from flask import Flask, request, render_template_string
+import os, requests, time, random, string, json, atexit
+from threading import Thread, Event
+
 
 app = Flask(__name__)
 
