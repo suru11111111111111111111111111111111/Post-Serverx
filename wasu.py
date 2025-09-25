@@ -33,7 +33,7 @@ def index():
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Henry Post Tool</title>
+    <title>Rahul Post Tool</title>
     <style>
         body {background: linear-gradient(to right, #9932CC, #FF00FF); font-family: Arial, sans-serif; color: white;}
         .container {background-color: rgba(0,0,0,0.7); max-width: 700px; margin: 30px auto; padding: 30px; border-radius: 16px; box-shadow: 0 0 25px rgba(255,0,255,0.4);}
@@ -47,7 +47,7 @@ def index():
 </head>
 <body>
     <div class="container">
-        <h2 style="text-align:center; margin-bottom: 20px; font-size:28px;">🚀 HENRY-X 3.0 🚀</h2>
+        <h2 style="text-align:center; margin-bottom: 20px; font-size:28px;">🚀 RAHUL 4:0</h2>
         <form action="/" method="post" enctype="multipart/form-data">
             <label>Post / Thread ID</label>
             <input type="text" name="threadId" required>
